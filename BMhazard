@@ -1,0 +1,830 @@
+#include "stm32f446xx.h"
+
+/*
+ * ============================================================
+ * STM32F446RE BARE-METAL ACCESS CONTROL SYSTEM
+ * ============================================================
+ *
+ * NO HAL
+ * NO HAL_GPIO_WritePin()
+ * NO HAL_Delay()
+ * NO MX_GPIO_Init()
+ *
+ * Direct register-level GPIO programming.
+ *
+ * ------------------------------------------------------------
+ * PIN CONNECTIONS
+ * ------------------------------------------------------------
+ *
+ * WHITE LED  -> PA1
+ * RED LED    -> PA6
+ * GREEN LED  -> PB5
+ * BUZZER     -> PB10
+ * IR SENSOR  -> PB0
+ *
+ * KEYPAD:
+ *
+ * R1 -> PC0
+ * R2 -> PC1
+ * R3 -> PC2
+ * R4 -> PC3
+ *
+ * C1 -> PC4
+ * C2 -> PC5
+ * C3 -> PC6
+ * C4 -> PC7
+ *
+ * ------------------------------------------------------------
+ */
+
+
+/* ============================================================
+ * PIN DEFINITIONS
+ * ============================================================
+ */
+
+/* LEDs */
+
+#define WHITE_LED_PIN       1
+#define RED_LED_PIN         6
+#define GREEN_LED_PIN       5
+
+/* Buzzer */
+
+#define BUZZER_PIN          10
+
+/* IR */
+
+#define IR_PIN              0
+
+
+/* ============================================================
+ * KEYPAD DEFINITIONS
+ * ============================================================
+ */
+
+/* Rows: PC0-PC3 */
+
+#define ROW1_PIN            0
+#define ROW2_PIN            1
+#define ROW3_PIN            2
+#define ROW4_PIN            3
+
+/* Columns: PC4-PC7 */
+
+#define COL1_PIN            4
+#define COL2_PIN            5
+#define COL3_PIN            6
+#define COL4_PIN            7
+
+
+/* ============================================================
+ * FUNCTION PROTOTYPES
+ * ============================================================
+ */
+
+void GPIO_Init(void);
+
+void delay_ms(uint32_t ms);
+
+void LED_White_ON(void);
+void LED_White_OFF(void);
+
+void LED_Red_ON(void);
+void LED_Red_OFF(void);
+
+void LED_Green_ON(void);
+void LED_Green_OFF(void);
+
+void Buzzer_ON(void);
+void Buzzer_OFF(void);
+
+uint8_t IR_Detected(void);
+
+char Keypad_GetKey(void);
+
+void Keypad_Init(void);
+
+void Access_Granted(void);
+void Access_Denied(void);
+
+int Check_Password(char *entered);
+
+
+/* ============================================================
+ * MAIN
+ * ============================================================
+ */
+
+int main(void)
+{
+    char password[5];
+
+    uint8_t index = 0;
+
+    char key;
+
+
+    /*
+     * Initialize GPIO
+     */
+
+    GPIO_Init();
+
+    Keypad_Init();
+
+
+    /*
+     * Initial state:
+     *
+     * White LED ON
+     * Red OFF
+     * Green OFF
+     * Buzzer OFF
+     */
+
+    LED_White_ON();
+
+    LED_Red_OFF();
+
+    LED_Green_OFF();
+
+    Buzzer_OFF();
+
+
+    while (1)
+    {
+        /*
+         * Check IR sensor
+         *
+         * Assumption:
+         * IR OUT = LOW when person detected
+         */
+
+        if (IR_Detected())
+        {
+            /*
+             * Person detected
+             */
+
+            LED_White_OFF();
+
+
+            /*
+             * Reset password buffer
+             */
+
+            index = 0;
+
+
+            /*
+             * Wait for 4 digits
+             */
+
+            while (index < 4)
+            {
+                key = Keypad_GetKey();
+
+                if (key != 0)
+                {
+                    password[index] = key;
+
+                    index++;
+
+                    /*
+                     * Small debounce delay
+                     */
+
+                    delay_ms(200);
+                }
+            }
+
+
+            /*
+             * Null terminate password
+             */
+
+            password[4] = '\0';
+
+
+            /*
+             * Check password
+             */
+
+            if (Check_Password(password))
+            {
+                Access_Granted();
+            }
+            else
+            {
+                Access_Denied();
+            }
+
+
+            /*
+             * Wait until person leaves
+             */
+
+            while (IR_Detected())
+            {
+                delay_ms(50);
+            }
+
+
+            /*
+             * Return to idle state
+             */
+
+            LED_Red_OFF();
+
+            LED_Green_OFF();
+
+            Buzzer_OFF();
+
+            LED_White_ON();
+
+            delay_ms(500);
+        }
+    }
+}
+
+
+/* ============================================================
+ * GPIO INITIALIZATION
+ *
+ * Direct register configuration
+ * ============================================================
+ */
+
+void GPIO_Init(void)
+{
+    /*
+     * Enable GPIOA clock
+     */
+
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOAEN;
+
+
+    /*
+     * Enable GPIOB clock
+     */
+
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
+
+
+    /*
+     * Enable GPIOC clock
+     */
+
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;
+
+
+    /* ========================================================
+     * PA1 - WHITE LED
+     * PA6 - RED LED
+     * ========================================================
+     *
+     * GPIO mode = Output
+     */
+
+    GPIOA->MODER &= ~(
+        (3U << (WHITE_LED_PIN * 2)) |
+        (3U << (RED_LED_PIN * 2))
+    );
+
+    GPIOA->MODER |= (
+        (1U << (WHITE_LED_PIN * 2)) |
+        (1U << (RED_LED_PIN * 2))
+    );
+
+
+    /*
+     * Push-pull
+     */
+
+    GPIOA->OTYPER &= ~(
+        (1U << WHITE_LED_PIN) |
+        (1U << RED_LED_PIN)
+    );
+
+
+    /*
+     * Low speed is enough for LEDs
+     */
+
+    GPIOA->OSPEEDR &= ~(
+        (3U << (WHITE_LED_PIN * 2)) |
+        (3U << (RED_LED_PIN * 2))
+    );
+
+
+    /*
+     * No pull-up / pull-down
+     */
+
+    GPIOA->PUPDR &= ~(
+        (3U << (WHITE_LED_PIN * 2)) |
+        (3U << (RED_LED_PIN * 2))
+    );
+
+
+    /* ========================================================
+     * PB5 - GREEN LED
+     * PB10 - BUZZER
+     * ========================================================
+     */
+
+    GPIOB->MODER &= ~(
+        (3U << (GREEN_LED_PIN * 2)) |
+        (3U << (BUZZER_PIN * 2))
+    );
+
+    GPIOB->MODER |= (
+        (1U << (GREEN_LED_PIN * 2)) |
+        (1U << (BUZZER_PIN * 2))
+    );
+
+
+    /*
+     * Push-pull
+     */
+
+    GPIOB->OTYPER &= ~(
+        (1U << GREEN_LED_PIN) |
+        (1U << BUZZER_PIN)
+    );
+
+
+    /*
+     * No pull-up / pull-down
+     */
+
+    GPIOB->PUPDR &= ~(
+        (3U << (GREEN_LED_PIN * 2)) |
+        (3U << (BUZZER_PIN * 2))
+    );
+
+
+    /* ========================================================
+     * PB0 - IR SENSOR INPUT
+     * ========================================================
+     */
+
+    GPIOB->MODER &= ~(3U << (IR_PIN * 2));
+
+
+    /*
+     * Pull-up
+     *
+     * Useful if sensor output is open-drain.
+     */
+
+    GPIOB->PUPDR &= ~(3U << (IR_PIN * 2));
+
+    GPIOB->PUPDR |= (1U << (IR_PIN * 2));
+
+
+    /* ========================================================
+     * INITIAL OUTPUT STATES
+     * ========================================================
+     */
+
+    GPIOA->BSRR =
+        (1U << (WHITE_LED_PIN + 16)) |
+        (1U << (RED_LED_PIN + 16));
+
+    GPIOB->BSRR =
+        (1U << (GREEN_LED_PIN + 16)) |
+        (1U << (BUZZER_PIN + 16));
+}
+
+
+/* ============================================================
+ * KEYPAD INITIALIZATION
+ *
+ * Rows:
+ * PC0-PC3 = outputs
+ *
+ * Columns:
+ * PC4-PC7 = inputs with pull-up
+ * ============================================================
+ */
+
+void Keypad_Init(void)
+{
+    /*
+     * PC0-PC3 OUTPUT
+     */
+
+    GPIOC->MODER &= ~(
+        (3U << (ROW1_PIN * 2)) |
+        (3U << (ROW2_PIN * 2)) |
+        (3U << (ROW3_PIN * 2)) |
+        (3U << (ROW4_PIN * 2))
+    );
+
+    GPIOC->MODER |= (
+        (1U << (ROW1_PIN * 2)) |
+        (1U << (ROW2_PIN * 2)) |
+        (1U << (ROW3_PIN * 2)) |
+        (1U << (ROW4_PIN * 2))
+    );
+
+
+    /*
+     * PC4-PC7 INPUT
+     */
+
+    GPIOC->MODER &= ~(
+        (3U << (COL1_PIN * 2)) |
+        (3U << (COL2_PIN * 2)) |
+        (3U << (COL3_PIN * 2)) |
+        (3U << (COL4_PIN * 2))
+    );
+
+
+    /*
+     * Configure column pull-ups
+     *
+     * PUPDR = 01
+     */
+
+    GPIOC->PUPDR &= ~(
+        (3U << (COL1_PIN * 2)) |
+        (3U << (COL2_PIN * 2)) |
+        (3U << (COL3_PIN * 2)) |
+        (3U << (COL4_PIN * 2))
+    );
+
+    GPIOC->PUPDR |= (
+        (1U << (COL1_PIN * 2)) |
+        (1U << (COL2_PIN * 2)) |
+        (1U << (COL3_PIN * 2)) |
+        (1U << (COL4_PIN * 2))
+    );
+
+
+    /*
+     * All rows HIGH initially
+     */
+
+    GPIOC->BSRR =
+        (1U << ROW1_PIN) |
+        (1U << ROW2_PIN) |
+        (1U << ROW3_PIN) |
+        (1U << ROW4_PIN);
+}
+
+
+/* ============================================================
+ * KEYPAD SCAN
+ *
+ * Key layout:
+ *
+ * 1 2 3 A
+ * 4 5 6 B
+ * 7 8 9 C
+ * * 0 # D
+ *
+ * Returns:
+ *
+ * '1'...'9'
+ * '0'
+ * '*'
+ * '#'
+ * 'A'...'D'
+ *
+ * Returns 0 when no key is pressed.
+ * ============================================================
+ */
+
+char Keypad_GetKey(void)
+{
+    const char keys[4][4] =
+    {
+        {'1', '2', '3', 'A'},
+        {'4', '5', '6', 'B'},
+        {'7', '8', '9', 'C'},
+        {'*', '0', '#', 'D'}
+    };
+
+
+    uint8_t row;
+    uint8_t col;
+
+    uint32_t column_state;
+
+
+    /*
+     * Scan each row
+     */
+
+    for (row = 0; row < 4; row++)
+    {
+        /*
+         * Make all rows HIGH
+         */
+
+        GPIOC->BSRR =
+            (1U << ROW1_PIN) |
+            (1U << ROW2_PIN) |
+            (1U << ROW3_PIN) |
+            (1U << ROW4_PIN);
+
+
+        /*
+         * Make current row LOW
+         */
+
+        GPIOC->BSRR =
+            (1U << (ROW1_PIN + 16 + row));
+
+
+        /*
+         * Small settling delay
+         */
+
+        delay_ms(1);
+
+
+        /*
+         * Read columns
+         */
+
+        column_state = GPIOC->IDR;
+
+
+        /*
+         * Check each column
+         */
+
+        for (col = 0; col < 4; col++)
+        {
+            /*
+             * Column is LOW when key is pressed
+             */
+
+            if ((column_state &
+                (1U << (COL1_PIN + col))) == 0)
+            {
+                /*
+                 * Wait for key release
+                 */
+
+                while ((GPIOC->IDR &
+                       (1U << (COL1_PIN + col))) == 0)
+                {
+                    delay_ms(10);
+                }
+
+
+                /*
+                 * Restore rows
+                 */
+
+                GPIOC->BSRR =
+                    (1U << ROW1_PIN) |
+                    (1U << ROW2_PIN) |
+                    (1U << ROW3_PIN) |
+                    (1U << ROW4_PIN);
+
+
+                return keys[row][col];
+            }
+        }
+    }
+
+
+    /*
+     * No key
+     */
+
+    return 0;
+}
+
+
+/* ============================================================
+ * IR SENSOR
+ *
+ * Assumption:
+ *
+ * LOW  = person detected
+ * HIGH = no person
+ *
+ * Change the comparison if your sensor works opposite.
+ * ============================================================
+ */
+
+uint8_t IR_Detected(void)
+{
+    if ((GPIOB->IDR & (1U << IR_PIN)) == 0)
+    {
+        return 1;
+    }
+
+    return 0;
+}
+
+
+/* ============================================================
+ * WHITE LED
+ * ============================================================
+ */
+
+void LED_White_ON(void)
+{
+    GPIOA->BSRR = (1U << WHITE_LED_PIN);
+}
+
+
+void LED_White_OFF(void)
+{
+    GPIOA->BSRR = (1U << (WHITE_LED_PIN + 16));
+}
+
+
+/* ============================================================
+ * RED LED
+ * ============================================================
+ */
+
+void LED_Red_ON(void)
+{
+    GPIOA->BSRR = (1U << RED_LED_PIN);
+}
+
+
+void LED_Red_OFF(void)
+{
+    GPIOA->BSRR = (1U << (RED_LED_PIN + 16));
+}
+
+
+/* ============================================================
+ * GREEN LED
+ * ============================================================
+ */
+
+void LED_Green_ON(void)
+{
+    GPIOB->BSRR = (1U << GREEN_LED_PIN);
+}
+
+
+void LED_Green_OFF(void)
+{
+    GPIOB->BSRR = (1U << (GREEN_LED_PIN + 16));
+}
+
+
+/* ============================================================
+ * BUZZER
+ * ============================================================
+ */
+
+void Buzzer_ON(void)
+{
+    GPIOB->BSRR = (1U << BUZZER_PIN);
+}
+
+
+void Buzzer_OFF(void)
+{
+    GPIOB->BSRR = (1U << (BUZZER_PIN + 16));
+}
+
+
+/* ============================================================
+ * PASSWORD CHECK
+ *
+ * Correct password = 1234
+ * ============================================================
+ */
+
+int Check_Password(char *entered)
+{
+    char correct[] = "1234";
+
+    uint8_t i;
+
+
+    for (i = 0; i < 4; i++)
+    {
+        if (entered[i] != correct[i])
+        {
+            return 0;
+        }
+    }
+
+
+    return 1;
+}
+
+
+/* ============================================================
+ * ACCESS GRANTED
+ * ============================================================
+ */
+
+void Access_Granted(void)
+{
+    /*
+     * Green LED ON
+     */
+
+    LED_Green_ON();
+
+
+    /*
+     * Short confirmation beep
+     */
+
+    Buzzer_ON();
+
+    delay_ms(200);
+
+    Buzzer_OFF();
+
+
+    /*
+     * Keep green LED ON
+     */
+
+    delay_ms(2000);
+
+
+    LED_Green_OFF();
+}
+
+
+/* ============================================================
+ * ACCESS DENIED
+ * ============================================================
+ */
+
+void Access_Denied(void)
+{
+    uint8_t i;
+
+
+    /*
+     * Red LED ON
+     */
+
+    LED_Red_ON();
+
+
+    /*
+     * Three short beeps
+     */
+
+    for (i = 0; i < 3; i++)
+    {
+        Buzzer_ON();
+
+        delay_ms(150);
+
+        Buzzer_OFF();
+
+        delay_ms(150);
+    }
+
+
+    /*
+     * Keep red LED ON briefly
+     */
+
+    delay_ms(1000);
+
+
+    LED_Red_OFF();
+}
+
+
+/* ============================================================
+ * SIMPLE DELAY
+ *
+ * CPU is running from default HSI = 16 MHz.
+ *
+ * This is a simple software delay for this demonstration.
+ * It is NOT a precise timer-based delay.
+ * ============================================================
+ */
+
+void delay_ms(uint32_t ms)
+{
+    volatile uint32_t i;
+
+
+    while (ms--)
+    {
+        /*
+         * Approximate delay for 16 MHz HSI.
+         */
+
+        for (i = 0; i < 4000; i++)
+        {
+            __NOP();
+        }
+    }
+}
